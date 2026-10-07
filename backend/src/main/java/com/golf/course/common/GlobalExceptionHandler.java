@@ -43,7 +43,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(ObjectOptimisticLockingFailureException.class)
     public ResponseEntity<ApiResponse<Void>> handleOptimisticLock(ObjectOptimisticLockingFailureException e) {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.fail(
-                "赛事数据已变化：他人已先一步推进收口 / 改动成绩，你的页面版本已过期，本次操作未生效；请重新读取当前排行榜与赛事状态后再试"));
+                "数据已变化：他人已先一步提交修改，你的页面版本已过期，本次操作未生效；请重新读取当前数据后再试"));
     }
 
     /**

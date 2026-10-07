@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.golf.course.common.ApiResponse;
@@ -40,7 +41,9 @@ public class PlayerController {
     }
 
     @PutMapping("/{id}")
-    public ApiResponse<Player> update(@PathVariable Long id, @RequestBody Player input) {
-        return ApiResponse.success("已更新", playerService.update(id, input));
+    public ApiResponse<Player> update(@PathVariable Long id,
+                                      @RequestBody Player input,
+                                      @RequestParam(required = false) Long expectedVersion) {
+        return ApiResponse.success("已更新", playerService.update(id, input, expectedVersion));
     }
 }

@@ -9,10 +9,17 @@ const tip = ref('')
 const loading = ref(false)
 const dialog = ref(false)
 const saving = ref(false)
+const editing = ref(false) // false=建档；true=编辑既有球员（带版本乐观锁）
+const formError = ref('') // 弹窗内错误（空值拒绝 / 版本冲突），不与弹窗外的页面提示混用
+const formRef = ref(null)
+const rules = {
+  playerNo: [{ required: true, message: '请输入球员编号', trigger: 'blur' }],
+  name: [{ required: true, message: '请输入球员姓名', trigger: 'blur' }]
+}
 
 const form = ref(blank())
 function blank() {
-  return { playerNo: '', name: '', handicap: 10, phone: '', note: '' }
+  return { id: null, version: null, playerNo: '', name: '', handicap: 10, phone: '', note: '' }
 }
 
 async function load() {
@@ -26,16 +33,83 @@ async function load() {
   } catch (e) { error.value = e.message } finally { loading.value = false }
 }
 
-function openCreate() { form.value = blank(); dialog.value = true; tip.value = ''; error.value = '' }
+function openCreate() {
+  editing.value = false
+  form.value = blank()
+  formError.value = ''
+  dialog.value = true; tip.value = ''; error.value = ''
+}
+
+/**
+ * 编辑球员：以当前行（列表已加载的最新版本）填充表单。保存时把 version 作为
+ * expectedVersion 带给服务端；他人在此期间改过资料时会收到 409，必须重新读取。
+ */
+function openEdit(row) {
+  editing.value = true
+  form.value = {
+    id: row.id, version: row.version,
+    playerNo: row.playerNo, name: row.name, handicap: row.handicap,
+    phone: row.phone || '', note: row.note || ''
+  }
+  formError.value = ''
+  dialog.value = true; tip.value = ''; error.value = ''
+  formRef.value?.clearValidate?.()
+}
+
+/**
+ * 冲突（409）或校验失败后：用服务端当前最新球员重建表单（版本号同步推进），
+ * 管理员核对后可直接在最新资料上重试，不能拿着过期表单再覆盖。
+ */
+function resetFormToLatest(player) {
+  if (!player || form.value.id !== player.id) return
+  form.value = {
+    id: player.id, version: player.version,
+    playerNo: player.playerNo, name: player.name, handicap: player.handicap,
+    phone: player.phone || '', note: player.note || ''
+  }
+}
+
 async function save() {
-  saving.value = true; error.value = ''
+  if (!formRef.value) return
+  try {
+    await formRef.value.validate()
+  } catch {
+    return // 必填项未过，停在弹窗里让管理员补
+  }
+  saving.value = true; formError.value = ''
   try {
     const d = { ...form.value, handicap: Number(form.value.handicap) }
-    await api.createPlayer(d)
-    tip.value = `球员 ${d.name} 已建档`
-    dialog.value = false
-    await load()
-  } catch (e) { error.value = e.message } finally { saving.value = false }
+    if (editing.value) {
+      const latest = await api.updatePlayer(d.id, d, d.version)
+      tip.value = `球员 ${latest.name} 的资料已更新（v${latest.version}）`
+      dialog.value = false
+      // 合法修改后重新读取：列表、差点详情、赛事/开球等页面都从服务端取数，一起显示新资料
+      await load()
+      if (hcp.value && hcp.value.playerId === d.id) {
+        await loadHandicap(d.id)
+      }
+    } else {
+      await api.createPlayer(d)
+      tip.value = `球员 ${d.name} 已建档`
+      dialog.value = false
+      await load()
+    }
+  } catch (e) {
+    if (e.isConflict) {
+      // 过期操作：明确提示「数据已变化」，并重新读取当前最新球员重建弹窗，
+      // 要求核对后重试；乐观锁兜底的 409 可能不带 data，则主动发一次查询
+      let latest = e.data
+      if ((!latest || latest.id !== form.value.id) && editing.value) {
+        try { latest = await api.getPlayer(form.value.id) } catch { /* 读取失败保留提示 */ }
+      }
+      formError.value = `${e.message}（弹窗已按当前最新资料重新载入，请核对后重试）`
+      resetFormToLatest(latest)
+      await load()
+    } else {
+      // 空姓名/编号等服务端拒绝：弹窗保留，原资料未被改动，管理员可核对错误后修改
+      formError.value = e.message
+    }
+  } finally { saving.value = false }
 }
 
 function statusType(h) {
@@ -147,25 +221,34 @@ onMounted(load)
         </el-table-column>
         <el-table-column prop="phone" label="联系电话" width="130" />
         <el-table-column prop="note" label="备注" min-width="120" />
-        <el-table-column label="操作" width="110" fixed="right">
+        <el-table-column label="操作" width="170" fixed="right">
           <template #default="{ row }">
+            <el-button size="small" type="warning" plain @click="openEdit(row)">编辑资料</el-button>
             <el-button size="small" type="primary" plain @click="openHandicap(row)">差点详情</el-button>
           </template>
         </el-table-column>
       </el-table>
     </div>
 
-    <el-dialog v-model="dialog" title="新建球员" width="560px">
-      <el-form :model="form" label-width="110px" class="dialog-form">
-        <el-form-item label="球员编号"><el-input v-model="form.playerNo" placeholder="如 P-011" /></el-form-item>
-        <el-form-item label="姓名"><el-input v-model="form.name" /></el-form-item>
+    <el-dialog v-model="dialog" :title="editing ? '编辑球员资料' : '新建球员'" width="560px">
+      <el-form ref="formRef" :model="form" :rules="rules" label-width="110px" class="dialog-form">
+        <el-form-item label="球员编号" prop="playerNo">
+          <el-input v-model="form.playerNo" placeholder="如 P-011" maxlength="16" show-word-limit />
+        </el-form-item>
+        <el-form-item label="姓名" prop="name">
+          <el-input v-model="form.name" maxlength="48" show-word-limit />
+        </el-form-item>
         <el-form-item label="差点(0~54)"><el-input v-model="form.handicap" type="number" min="0" max="54" /></el-form-item>
-        <el-form-item label="联系电话"><el-input v-model="form.phone" /></el-form-item>
-        <el-form-item label="备注" class="full"><el-input v-model="form.note" /></el-form-item>
+        <el-form-item label="联系电话"><el-input v-model="form.phone" maxlength="24" /></el-form-item>
+        <el-form-item label="备注" class="full"><el-input v-model="form.note" maxlength="64" /></el-form-item>
       </el-form>
+      <div v-if="formError" class="err" style="margin-top:4px">{{ formError }}</div>
+      <div v-if="editing" class="muted" style="margin-top:6px;font-size:12px">
+        基于版本 v{{ form.version }} 编辑：他人在此期间提交后，本次保存会被拒绝并要求按最新资料重新核对。
+      </div>
       <template #footer>
         <el-button @click="dialog = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="save">建档</el-button>
+        <el-button type="primary" :loading="saving" @click="save">{{ editing ? '保存修改' : '建档' }}</el-button>
       </template>
     </el-dialog>
 

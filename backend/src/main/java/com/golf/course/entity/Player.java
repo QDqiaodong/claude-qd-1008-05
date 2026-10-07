@@ -9,6 +9,7 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 
 import lombok.Getter;
 import lombok.Setter;
@@ -21,6 +22,9 @@ import lombok.Setter;
  * <p>handicapIndex 是「差点指数重算」写回的当前计算指数（样本不足时为 NULL）。
  * 它只是最近一次计算结果的冗余展示位——计算依据、采用轮次、规则快照与历史指数
  * 全部留痕在 handicap_history / handicap_history_round，绝不允许只改这个数字。</p>
+ *
+ * <p>{@link #version} 为乐观锁：多人同时维护同一球员资料时，只有基于最新版本的一次提交成功，
+ * 过期提交一律 409 并要求重新读取当前球员。</p>
  */
 @Entity
 @Table(name = "player")
@@ -59,4 +63,9 @@ public class Player {
 
     @Column(name = "created_at")
     private LocalDateTime createdAt;
+
+    /** 乐观锁版本：编辑资料必须带打开页面时的版本，过期提交 409 */
+    @Version
+    @Column(name = "version", nullable = false)
+    private Long version;
 }
