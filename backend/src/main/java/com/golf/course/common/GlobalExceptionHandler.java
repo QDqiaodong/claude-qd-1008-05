@@ -39,11 +39,12 @@ public class GlobalExceptionHandler {
 
     /**
      * JPA 乐观锁兜底：即使漏传 expectedVersion，@Version 也会在提交时拦住并发覆盖，统一转 409。
+     * 冲突实体可能是赛事、记分卡、排行榜快照、球员等，提示语保持领域中立，一律要求重读当前数据。
      */
     @ExceptionHandler(ObjectOptimisticLockingFailureException.class)
     public ResponseEntity<ApiResponse<Void>> handleOptimisticLock(ObjectOptimisticLockingFailureException e) {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.fail(
-                "赛事数据已变化：他人已先一步推进收口 / 改动成绩，你的页面版本已过期，本次操作未生效；请重新读取当前排行榜与赛事状态后再试"));
+                "数据已变化：他人已先一步提交修改，你的页面版本已过期，本次操作未生效；请重新读取当前数据后再试"));
     }
 
     /**

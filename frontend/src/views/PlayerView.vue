@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import api from '../api'
 
 const rows = ref([])
@@ -15,6 +15,19 @@ function blank() {
   return { playerNo: '', name: '', handicap: 10, phone: '', note: '' }
 }
 
+// ---------------- 球员编辑（必填资料服务端校验 + 乐观版本） ----------------
+// dialogMode: create / edit。编辑时 formVersion 记录打开的版本号，随 PUT 一起发；
+// 他人先改导致 409 时，不允许本地覆盖，明确提示「数据已变化」并强制重新拉取当前球员。
+const dialogMode = ref('create')
+const formVersion = ref(null)
+const dialogError = ref('')
+const dialogTitle = computed(() => dialogMode.value === 'edit' ? '编辑球员' : '新建球员')
+const formRules = {
+  playerNo: [{ required: true, whitespace: true, message: '球员编号不能为空', trigger: 'blur' }],
+  name: [{ required: true, whitespace: true, message: '球员姓名不能为空', trigger: 'blur' }]
+}
+const formRef = ref(null)
+
 async function load() {
   loading.value = true; error.value = ''
   try {
@@ -26,16 +39,80 @@ async function load() {
   } catch (e) { error.value = e.message } finally { loading.value = false }
 }
 
-function openCreate() { form.value = blank(); dialog.value = true; tip.value = ''; error.value = '' }
+function openCreate() {
+  dialogMode.value = 'create'
+  formVersion.value = null
+  form.value = { id: null, ...blank() }
+  dialogError.value = ''
+  dialog.value = true
+  tip.value = ''; error.value = ''
+}
+
+/**
+ * 打开编辑：以服务端返回的当前行作为表单初值并记录版本号，不做本地拼装，
+ * 避免用过期 / 残缺数据发起更新。
+ */
+function openEdit(row) {
+  dialogMode.value = 'edit'
+  formVersion.value = row.version
+  form.value = {
+    id: row.id,
+    playerNo: row.playerNo ?? '',
+    name: row.name ?? '',
+    handicap: row.handicap ?? 10,
+    phone: row.phone ?? '',
+    note: row.note ?? ''
+  }
+  dialogError.value = ''
+  dialog.value = true
+  tip.value = ''; error.value = ''
+}
+
+/**
+ * 保存（新建 / 编辑共用）。
+ * - 前端必填校验只是第一道，真正口径在服务端（trim 后非空）；400 时弹窗保留、原资料不动。
+ * - 409 版本过期：关闭弹窗、明确提示「数据已变化」，用服务端最新数据重建列表，
+ *   过期表单绝不写回；管理员需重新点编辑、基于当前版本改。
+ * - 成功后从服务端整表重载（球员名册 + 差点汇总），列表 / 详情 / 赛事页的球员显示
+ *   都经接口取数，不存在只改页面局部状态导致的新旧姓名不一致。
+ */
 async function save() {
-  saving.value = true; error.value = ''
+  dialogError.value = ''
   try {
-    const d = { ...form.value, handicap: Number(form.value.handicap) }
-    await api.createPlayer(d)
-    tip.value = `球员 ${d.name} 已建档`
-    dialog.value = false
+    await formRef.value?.validate?.()
+  } catch {
+    dialogError.value = '请先补全必填项：球员编号、姓名均不能为空（纯空格也不行）'
+    return
+  }
+  saving.value = true
+  try {
+    const d = {
+      ...form.value,
+      playerNo: String(form.value.playerNo ?? ''),
+      name: String(form.value.name ?? ''),
+      handicap: Number(form.value.handicap)
+    }
+    if (dialogMode.value === 'edit') {
+      await api.updatePlayer(form.value.id, d, formVersion.value)
+      tip.value = `球员 ${d.name.trim()} 的资料已更新（列表、详情与赛事相关显示已同步为最新资料）`
+      dialog.value = false
+    } else {
+      await api.createPlayer(d)
+      tip.value = `球员 ${d.name.trim()} 已建档`
+      dialog.value = false
+    }
     await load()
-  } catch (e) { error.value = e.message } finally { saving.value = false }
+  } catch (e) {
+    if (e.isConflict) {
+      // 他人已先提交：本次修改未生效，关闭过期表单并按最新数据刷新，给出明确的核对提示。
+      dialog.value = false
+      error.value = `${e.message}（本次修改未生效，列表已按最新数据刷新，请重新打开编辑）`
+      await load()
+    } else {
+      // 400 校验失败：服务端已保留原资料，弹窗保留用户输入，错误明确可核对。
+      dialogError.value = e.message
+    }
+  } finally { saving.value = false }
 }
 
 function statusType(h) {
@@ -147,25 +224,53 @@ onMounted(load)
         </el-table-column>
         <el-table-column prop="phone" label="联系电话" width="130" />
         <el-table-column prop="note" label="备注" min-width="120" />
-        <el-table-column label="操作" width="110" fixed="right">
+        <el-table-column label="版本" width="80">
+          <template #default="{ row }"><span class="muted">v{{ row.version ?? 0 }}</span></template>
+        </el-table-column>
+        <el-table-column label="操作" width="180" fixed="right">
           <template #default="{ row }">
+            <el-button size="small" type="primary" plain @click="openEdit(row)">编辑</el-button>
             <el-button size="small" type="primary" plain @click="openHandicap(row)">差点详情</el-button>
           </template>
         </el-table-column>
       </el-table>
     </div>
 
-    <el-dialog v-model="dialog" title="新建球员" width="560px">
-      <el-form :model="form" label-width="110px" class="dialog-form">
-        <el-form-item label="球员编号"><el-input v-model="form.playerNo" placeholder="如 P-011" /></el-form-item>
-        <el-form-item label="姓名"><el-input v-model="form.name" /></el-form-item>
+    <el-dialog v-model="dialog" :title="dialogTitle" width="560px">
+      <el-form
+        ref="formRef"
+        :model="form"
+        :rules="formRules"
+        label-width="110px"
+        class="dialog-form"
+        @submit.prevent
+      >
+        <div v-if="dialogError" class="err dialog-err">{{ dialogError }}</div>
+        <el-alert
+          v-if="dialogMode === 'edit'"
+          type="info"
+          :closable="false"
+          show-icon
+          class="version-tip"
+          title="多人同时编辑时，只有基于最新版本的一次提交会生效；若他人已先修改，提交会提示数据已变化并要求重新读取。"
+        >
+          当前基于版本 v{{ formVersion ?? 0 }} 编辑
+        </el-alert>
+        <el-form-item label="球员编号" prop="playerNo" required>
+          <el-input v-model="form.playerNo" placeholder="如 P-011（必填，纯空格无效）" />
+        </el-form-item>
+        <el-form-item label="姓名" prop="name" required>
+          <el-input v-model="form.name" placeholder="必填，服务端会去除首尾空格后校验" />
+        </el-form-item>
         <el-form-item label="差点(0~54)"><el-input v-model="form.handicap" type="number" min="0" max="54" /></el-form-item>
         <el-form-item label="联系电话"><el-input v-model="form.phone" /></el-form-item>
         <el-form-item label="备注" class="full"><el-input v-model="form.note" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialog = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="save">建档</el-button>
+        <el-button type="primary" :loading="saving" @click="save">
+          {{ dialogMode === 'edit' ? '保存修改' : '建档' }}
+        </el-button>
       </template>
     </el-dialog>
 
@@ -261,4 +366,6 @@ onMounted(load)
 .hcp-index { font-weight: 800; color: var(--primary-deep); font-size: 15px; }
 .hcp-meta { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
 .section-title { font-size: 13px; font-weight: 700; color: var(--primary-deep); margin: 12px 0 8px; }
+.dialog-err { margin-bottom: 12px; }
+.version-tip { margin-bottom: 14px; }
 </style>

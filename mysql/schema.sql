@@ -78,6 +78,8 @@ CREATE TABLE hole (
 -- handicap_index 为「差点指数重算」写回的当前计算指数（样本不足时为 NULL），
 -- 计算依据、采用轮次与规则快照都在 handicap_history / handicap_history_round，
 -- 绝不允许只改这一个数字而不留计算痕迹。
+-- version 为 @Version 乐观锁号：多人同时编辑同一球员时只有按最新版本的一次提交成功，
+-- 过期操作 409 并要求重新读取当前球员资料。
 CREATE TABLE player (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     player_no VARCHAR(16) NOT NULL UNIQUE,
@@ -87,7 +89,8 @@ CREATE TABLE player (
     handicap_index_at DATETIME,
     phone VARCHAR(24),
     note VARCHAR(64),
-    created_at DATETIME
+    created_at DATETIME,
+    version BIGINT NOT NULL DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------- 开球时间 ----------------

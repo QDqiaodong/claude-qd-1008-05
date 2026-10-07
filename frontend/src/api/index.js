@@ -50,7 +50,9 @@ export default {
   listPlayers: () => call(http.get('/players')),
   getPlayer: (id) => call(http.get(`/players/${id}`)),
   createPlayer: (d) => call(http.post('/players', d)),
-  updatePlayer: (id, d) => call(http.put(`/players/${id}`, d)),
+  // 编辑球员必须携带打开时的版本号：409 表示他人已先改，页面要提示并重新读取当前球员。
+  updatePlayer: (id, d, expectedVersion) =>
+    call(http.put(`/players/${id}`, d, params({ ...(expectedVersion != null ? { expectedVersion } : {}) }))),
 
   // ---------------- 开球时间 ----------------
   listTeeTimes: (p) => call(http.get('/tee-times', params(p || {}))),
